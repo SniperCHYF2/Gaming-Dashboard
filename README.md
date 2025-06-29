@@ -1,3 +1,5 @@
+Source code included
+
 this is a custom gaming dashboard with window integration for steam, discord, and chrome
 
 you have to run the certificate (just double click on the .cer file) as this installs like a windows app from the store. 
