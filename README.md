@@ -8,5 +8,8 @@ after you install that you can just search for dashboard in the search bar and r
 
 possibly more updates to come. 
 
+This app does not collect data, modify files, or inject into other processes.
+It uses native Windows APIs (like SetParent) to organize your workspace that’s it.
+
 
 https://www.virustotal.com/gui/file/3c5d9d18c84181dabb9bd0f817438ab35ae01f58a4055a6178dedc29eee17b73?nocache=1
