@@ -1,4 +1,5 @@
 Source code included
+if you dont want to use my certifcate you can take the source code and create your own
 
 this is a custom gaming dashboard with window integration for steam, discord, and chrome
 
