@@ -7,3 +7,6 @@ after you install the .cer file run the .msix file
 after you install that you can just search for dashboard in the search bar and run the app. 
 
 possibly more updates to come. 
+
+
+https://www.virustotal.com/gui/file/3c5d9d18c84181dabb9bd0f817438ab35ae01f58a4055a6178dedc29eee17b73?nocache=1
