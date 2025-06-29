@@ -1,6 +1,6 @@
 this is a custom gaming dashboard with window integration for steam, discord, and chrome
 
-you have to run the certificate (just double click on the .cer file) as this installs like a windows ass from the store. 
+you have to run the certificate (just double click on the .cer file) as this installs like a windows app from the store. 
 
 after you install the .cer file run the .msix file
 
