@@ -1,0 +1,729 @@
+.cpp
+#include "pch.h"
+#include "MainWindow.xaml.h"
+#if __has_include("MainWindow.g.cpp")
+#include "MainWindow.g.cpp"
+#endif
+
+#include <windows.h>
+#include <shellapi.h>
+#include <thread>
+#pragma comment(lib, "shell32.lib")
+
+using namespace winrt;
+using namespace Microsoft::UI::Xaml;
+
+namespace winrt::DashboardApp::implementation
+{
+    MainWindow::MainWindow()
+    {
+        InitializeComponent();
+        LoadSettings(); // Load saved paths
+
+        // Add warning message box
+        MessageBox(nullptr,
+            L"For best results, please close Chrome, Steam, and Discord before using the dashboard.\n\nThis ensures the apps embed properly into the dashboard.",
+            L"Gaming Dashboard - Tip",
+            MB_OK | MB_ICONINFORMATION);
+    }
+
+    void MainWindow::LoadSettings()
+    {
+        // Default paths
+        m_chromePath = L"C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+        m_steamPath = L"C:\\Program Files (x86)\\Steam\\Steam.exe";
+        m_discordPath = L"C:\\Users\\PC\\AppData\\Local\\Discord\\Update.exe --processStart Discord.exe";
+
+        // Try to load from registry
+        HKEY hKey;
+        if (RegOpenKeyEx(HKEY_CURRENT_USER, L"SOFTWARE\\GamingDashboard", 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+        {
+            wchar_t buffer[512];
+            DWORD bufferSize = sizeof(buffer);
+
+            if (RegQueryValueEx(hKey, L"ChromePath", NULL, NULL, (LPBYTE)buffer, &bufferSize) == ERROR_SUCCESS)
+                m_chromePath = buffer;
+
+            bufferSize = sizeof(buffer);
+            if (RegQueryValueEx(hKey, L"SteamPath", NULL, NULL, (LPBYTE)buffer, &bufferSize) == ERROR_SUCCESS)
+                m_steamPath = buffer;
+
+            bufferSize = sizeof(buffer);
+            if (RegQueryValueEx(hKey, L"DiscordPath", NULL, NULL, (LPBYTE)buffer, &bufferSize) == ERROR_SUCCESS)
+                m_discordPath = buffer;
+
+            RegCloseKey(hKey);
+        }
+    }
+
+    void MainWindow::SaveSettings()
+    {
+        HKEY hKey;
+        if (RegCreateKeyEx(HKEY_CURRENT_USER, L"SOFTWARE\\GamingDashboard", 0, NULL, 0, KEY_WRITE, NULL, &hKey, NULL) == ERROR_SUCCESS)
+        {
+            RegSetValueEx(hKey, L"ChromePath", 0, REG_SZ, (LPBYTE)m_chromePath.c_str(), (m_chromePath.length() + 1) * sizeof(wchar_t));
+            RegSetValueEx(hKey, L"SteamPath", 0, REG_SZ, (LPBYTE)m_steamPath.c_str(), (m_steamPath.length() + 1) * sizeof(wchar_t));
+            RegSetValueEx(hKey, L"DiscordPath", 0, REG_SZ, (LPBYTE)m_discordPath.c_str(), (m_discordPath.length() + 1) * sizeof(wchar_t));
+            RegCloseKey(hKey);
+        }
+    }
+
+    void MainWindow::ShowSettings()
+    {
+        // Update textboxes with current paths
+        ChromePathBox().Text(m_chromePath);
+        SteamPathBox().Text(m_steamPath);
+        DiscordPathBox().Text(m_discordPath);
+
+        SettingsPanel().Visibility(Microsoft::UI::Xaml::Visibility::Visible);
+    }
+
+    void MainWindow::HideSettings()
+    {
+        SettingsPanel().Visibility(Microsoft::UI::Xaml::Visibility::Collapsed);
+    }
+
+    HWND MainWindow::GetDashboardHwnd()
+    {
+        return FindWindow(nullptr, L"Gaming Dashboard");
+    }
+
+    void MainWindow::SwitchToTab(const std::wstring& tabName)
+    {
+        // Hide current window
+        if (m_currentWindow)
+        {
+            ShowWindow(m_currentWindow, SW_HIDE);
+        }
+
+        // Show the window for this tab
+        if (m_tabWindows.find(tabName) != m_tabWindows.end())
+        {
+            HWND tabWindow = m_tabWindows[tabName];
+            FormatWindowToFit(tabWindow);
+            ShowWindow(tabWindow, SW_SHOW);
+            m_currentWindow = tabWindow;
+        }
+
+        m_currentTab = tabName;
+    }
+
+    void MainWindow::FormatWindowToFit(HWND window)
+    {
+        if (!window) return;
+        HWND dashboardHwnd = GetDashboardHwnd();
+        if (!dashboardHwnd) return;
+        RECT dashboardRect;
+        GetClientRect(dashboardHwnd, &dashboardRect);
+
+        // Changed from headerHeight to sidebarWidth for vertical layout
+        int sidebarWidth = 200; // Width of our vertical sidebar
+        int xPos = sidebarWidth; // Start after the sidebar
+        int yPos = 0; // Start at top
+        int width = dashboardRect.right - dashboardRect.left - sidebarWidth; // Subtract sidebar width
+        int height = dashboardRect.bottom - dashboardRect.top; // Full height
+
+        SetWindowPos(window, HWND_TOP, xPos, yPos, width, height, SWP_SHOWWINDOW);
+    }
+
+
+    void MainWindow::EmbedWindow(HWND childWindow, const std::wstring& tabName)
+    {
+        if (!childWindow) return;
+
+        HWND dashboardHwnd = GetDashboardHwnd();
+        if (!dashboardHwnd) return;
+
+        // Embed the window
+        SetParent(childWindow, dashboardHwnd);
+
+        // Remove window decorations
+        LONG style = GetWindowLong(childWindow, GWL_STYLE);
+        style &= ~(WS_CAPTION | WS_THICKFRAME | WS_MINIMIZE | WS_MAXIMIZE | WS_SYSMENU);
+        SetWindowLong(childWindow, GWL_STYLE, style);
+
+        // Store this window
+        m_tabWindows[tabName] = childWindow;
+
+        // Show if it's the current tab
+        if (tabName == m_currentTab)
+        {
+            FormatWindowToFit(childWindow);
+            ShowWindow(childWindow, SW_SHOW);
+            m_currentWindow = childWindow;
+        }
+        else
+        {
+            ShowWindow(childWindow, SW_HIDE);
+        }
+    }
+
+    HWND MainWindow::FindWindowByTitle(const std::wstring& titlePart)
+    {
+        struct FindWindowData
+        {
+            std::wstring titlePart;
+            HWND foundWindow;
+        };
+
+        FindWindowData data;
+        data.titlePart = titlePart;
+        data.foundWindow = nullptr;
+
+        EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL
+            {
+                if (!IsWindowVisible(hwnd)) return TRUE;
+
+                FindWindowData* data = (FindWindowData*)lParam;
+
+                wchar_t title[256];
+                GetWindowText(hwnd, title, 256);
+
+                std::wstring windowTitle = title;
+
+                if (windowTitle.find(data->titlePart) != std::wstring::npos)
+                {
+                    data->foundWindow = hwnd;
+                    return FALSE; // Stop searching
+                }
+                return TRUE;
+            }, (LPARAM)&data);
+
+        return data.foundWindow;
+    }
+
+    HWND MainWindow::LaunchAndWait(const std::wstring& exePath, const std::wstring& args, const std::wstring& windowTitle)
+    {
+        // Check if window already exists
+        HWND existingWindow = FindWindowByTitle(windowTitle);
+        if (existingWindow) return existingWindow;
+
+        // Launch the application
+        if (args.empty())
+        {
+            ShellExecute(0, 0, exePath.c_str(), nullptr, 0, SW_SHOW);
+        }
+        else
+        {
+            ShellExecute(0, 0, exePath.c_str(), args.c_str(), 0, SW_SHOW);
+        }
+
+        // Wait for window to appear
+        for (int i = 0; i < 30; i++)
+        {
+            Sleep(1000);
+            HWND window = FindWindowByTitle(windowTitle);
+            if (window) return window;
+        }
+
+        return nullptr;
+    }
+
+    void MainWindow::ChromeBtn_Click(winrt::Windows::Foundation::IInspectable const&, winrt::Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        HideSettings(); // Hide settings if open
+
+        if (m_tabWindows.find(L"Chrome") != m_tabWindows.end())
+        {
+            SwitchToTab(L"Chrome");
+        }
+        else
+        {
+            m_currentTab = L"Chrome";
+            std::thread([this]()
+                {
+                    HWND chromeWindow = LaunchAndWait(m_chromePath, L"", L"Chrome");
+
+                    if (chromeWindow)
+                    {
+                        this->DispatcherQueue().TryEnqueue([this, chromeWindow]()
+                            {
+                                EmbedWindow(chromeWindow, L"Chrome");
+                                SwitchToTab(L"Chrome");
+                            });
+                    }
+                }).detach();
+        }
+    }
+
+    void MainWindow::SteamBtn_Click(winrt::Windows::Foundation::IInspectable const&, winrt::Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        HideSettings(); // Hide settings if open
+
+        if (m_tabWindows.find(L"Steam") != m_tabWindows.end())
+        {
+            SwitchToTab(L"Steam");
+        }
+        else
+        {
+            m_currentTab = L"Steam";
+            std::thread([this]()
+                {
+                    HWND steamWindow = LaunchAndWait(m_steamPath, L"", L"Steam");
+
+                    if (steamWindow)
+                    {
+                        this->DispatcherQueue().TryEnqueue([this, steamWindow]()
+                            {
+                                EmbedWindow(steamWindow, L"Steam");
+                                SwitchToTab(L"Steam");
+                            });
+                    }
+                }).detach();
+        }
+    }
+
+    void MainWindow::DiscordBtn_Click(winrt::Windows::Foundation::IInspectable const&, winrt::Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        HideSettings(); // Hide settings if open
+
+        if (m_tabWindows.find(L"Discord") != m_tabWindows.end())
+        {
+            SwitchToTab(L"Discord");
+        }
+        else
+        {
+            m_currentTab = L"Discord";
+            std::thread([this]()
+                {
+                    // Parse Discord path and arguments
+                    size_t spacePos = m_discordPath.find(L" --");
+                    std::wstring discordExe = m_discordPath.substr(0, spacePos);
+                    std::wstring discordArgs = spacePos != std::wstring::npos ? m_discordPath.substr(spacePos + 1) : L"";
+
+                    // Launch Discord
+                    ShellExecute(0, 0, discordExe.c_str(), discordArgs.c_str(), 0, SW_SHOW);
+
+                    // Wait extra time for Discord to fully load past the splash screen
+                    Sleep(4000); // 4 seconds delay to let Discord fully start
+
+                    // Now look for the real Discord window
+                    HWND discordWindow = nullptr;
+                    for (int i = 0; i < 15; i++) // Try for 15 more seconds
+                    {
+                        Sleep(1000);
+                        discordWindow = FindWindowByTitle(L"Discord");
+                        if (discordWindow)
+                        {
+                            // Make sure it's not the loading screen by checking window size
+                            RECT rect;
+                            GetWindowRect(discordWindow, &rect);
+                            int width = rect.right - rect.left;
+                            int height = rect.bottom - rect.top;
+
+                            // Discord loading screen is usually small, real Discord is bigger
+                            if (width > 300 && height > 200)
+                            {
+                                break;
+                            }
+                            else
+                            {
+                                discordWindow = nullptr; // Keep looking
+                            }
+                        }
+                    }
+
+                    if (discordWindow)
+                    {
+                        this->DispatcherQueue().TryEnqueue([this, discordWindow]()
+                            {
+                                EmbedWindow(discordWindow, L"Discord");
+                                SwitchToTab(L"Discord");
+                            });
+                    }
+                }).detach();
+        }
+    }
+
+    void MainWindow::SettingsBtn_Click(winrt::Windows::Foundation::IInspectable const&, winrt::Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        ShowSettings();
+    }
+
+    void MainWindow::SaveSettingsBtn_Click(winrt::Windows::Foundation::IInspectable const&, winrt::Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        // Get values from textboxes
+        m_chromePath = ChromePathBox().Text().c_str();
+        m_steamPath = SteamPathBox().Text().c_str();
+        m_discordPath = DiscordPathBox().Text().c_str();
+
+        SaveSettings();
+        HideSettings();
+
+        MessageBox(nullptr, L"Settings saved successfully!", L"Settings", MB_OK | MB_ICONINFORMATION);
+    }
+
+    void MainWindow::CloseSettingsBtn_Click(winrt::Windows::Foundation::IInspectable const&, winrt::Microsoft::UI::Xaml::RoutedEventArgs const&)
+    {
+        HideSettings();
+    }
+}
+
+
+
+
+
+
+
+.h 
+#pragma once
+#include "MainWindow.g.h"
+#include <map>
+
+namespace winrt::DashboardApp::implementation
+{
+    struct MainWindow : MainWindowT<MainWindow>
+    {
+        MainWindow();
+        void ChromeBtn_Click(winrt::Windows::Foundation::IInspectable const& sender, winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
+        void SteamBtn_Click(winrt::Windows::Foundation::IInspectable const& sender, winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
+        void DiscordBtn_Click(winrt::Windows::Foundation::IInspectable const& sender, winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
+        void SettingsBtn_Click(winrt::Windows::Foundation::IInspectable const& sender, winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
+        void SaveSettingsBtn_Click(winrt::Windows::Foundation::IInspectable const& sender, winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
+        void CloseSettingsBtn_Click(winrt::Windows::Foundation::IInspectable const& sender, winrt::Microsoft::UI::Xaml::RoutedEventArgs const& args);
+
+    private:
+        std::map<std::wstring, HWND> m_tabWindows;
+        HWND m_currentWindow = nullptr;
+        std::wstring m_currentTab = L"";
+
+        // Settings paths
+        std::wstring m_chromePath;
+        std::wstring m_steamPath;
+        std::wstring m_discordPath;
+
+        HWND GetDashboardHwnd();
+        void SwitchToTab(const std::wstring& tabName);
+        void EmbedWindow(HWND childWindow, const std::wstring& tabName);
+        void FormatWindowToFit(HWND window);
+        HWND FindWindowByTitle(const std::wstring& titlePart);
+        HWND LaunchAndWait(const std::wstring& exePath, const std::wstring& args, const std::wstring& windowTitle);
+
+        // Settings functions
+        void LoadSettings();
+        void SaveSettings();
+        void ShowSettings();
+        void HideSettings();
+    };
+}
+
+namespace winrt::DashboardApp::factory_implementation
+{
+    struct MainWindow : MainWindowT<MainWindow, winrt::DashboardApp::implementation::MainWindow>
+    {
+    };
+}
+
+
+
+
+
+
+
+
+.zaml
+<Window x:Class="DashboardApp.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Gaming Dashboard">
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="200"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Vertical Sidebar -->
+        <Border Grid.Column="0" Background="#1a1a1a" BorderBrush="#333333" BorderThickness="0,0,1,0">
+            <StackPanel Margin="0,20,0,0">
+                <!-- Dashboard Title -->
+                <Border Background="#2d2d30" Margin="10,0,10,20" CornerRadius="8" Padding="15,10">
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                        <TextBlock Text="🎮" FontSize="20" Margin="0,0,8,0"/>
+                        <TextBlock Text="GAMING" FontSize="14" FontWeight="Bold" Foreground="#00d4ff" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- Navigation Buttons - Force full width stretch -->
+                <Button Name="ChromeBtn" Click="ChromeBtn_Click" Margin="0,5" Height="50" 
+                        Background="#2d2d30" BorderBrush="#404040" BorderThickness="1" CornerRadius="6"
+                        HorizontalContentAlignment="Left" Padding="15,0" HorizontalAlignment="Stretch">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                    BorderBrush="{TemplateBinding BorderBrush}" 
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="6">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                VerticalAlignment="Center"/>
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal"/>
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <ColorAnimation Storyboard.TargetName="border" 
+                                                              Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                              To="#404040" Duration="0:0:0.1"/>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <Storyboard>
+                                                <ColorAnimation Storyboard.TargetName="border" 
+                                                              Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                              To="#00d4ff" Duration="0:0:0.1"/>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🌐" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Chrome" FontSize="13" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <Button Name="SteamBtn" Click="SteamBtn_Click" Margin="0,5" Height="50"
+                        Background="#2d2d30" BorderBrush="#404040" BorderThickness="1" CornerRadius="6"
+                        HorizontalContentAlignment="Left" Padding="15,0" HorizontalAlignment="Stretch">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                    BorderBrush="{TemplateBinding BorderBrush}" 
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="6">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                VerticalAlignment="Center"/>
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal"/>
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <ColorAnimation Storyboard.TargetName="border" 
+                                                              Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                              To="#404040" Duration="0:0:0.1"/>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <Storyboard>
+                                                <ColorAnimation Storyboard.TargetName="border" 
+                                                              Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                              To="#1b2838" Duration="0:0:0.1"/>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🎮" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Steam" FontSize="13" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <Button Name="DiscordBtn" Click="DiscordBtn_Click" Margin="0,5" Height="50"
+                        Background="#2d2d30" BorderBrush="#404040" BorderThickness="1" CornerRadius="6"
+                        HorizontalContentAlignment="Left" Padding="15,0" HorizontalAlignment="Stretch">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                    BorderBrush="{TemplateBinding BorderBrush}" 
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="6">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                VerticalAlignment="Center"/>
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal"/>
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <ColorAnimation Storyboard.TargetName="border" 
+                                                              Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                              To="#404040" Duration="0:0:0.1"/>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <Storyboard>
+                                                <ColorAnimation Storyboard.TargetName="border" 
+                                                              Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                              To="#5865f2" Duration="0:0:0.1"/>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="💬" FontSize="18" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Discord" FontSize="13" FontWeight="SemiBold" Foreground="White" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+
+                <!-- Settings Button at Bottom - Force full width stretch -->
+                <Button Name="SettingsBtn" Click="SettingsBtn_Click" Margin="0,30,0,15" Height="45"
+                        Background="#36393f" BorderBrush="#555555" BorderThickness="1" CornerRadius="6"
+                        HorizontalContentAlignment="Left" Padding="15,0" HorizontalAlignment="Stretch">
+                    <Button.Template>
+                        <ControlTemplate TargetType="Button">
+                            <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                    BorderBrush="{TemplateBinding BorderBrush}" 
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="6">
+                                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                                VerticalAlignment="Center"/>
+                                <VisualStateManager.VisualStateGroups>
+                                    <VisualStateGroup x:Name="CommonStates">
+                                        <VisualState x:Name="Normal"/>
+                                        <VisualState x:Name="PointerOver">
+                                            <Storyboard>
+                                                <ColorAnimation Storyboard.TargetName="border" 
+                                                              Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                              To="#4a4d52" Duration="0:0:0.1"/>
+                                            </Storyboard>
+                                        </VisualState>
+                                        <VisualState x:Name="Pressed">
+                                            <Storyboard>
+                                                <ColorAnimation Storyboard.TargetName="border" 
+                                                              Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                              To="#ff9500" Duration="0:0:0.1"/>
+                                            </Storyboard>
+                                        </VisualState>
+                                    </VisualStateGroup>
+                                </VisualStateManager.VisualStateGroups>
+                            </Border>
+                        </ControlTemplate>
+                    </Button.Template>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="⚙️" FontSize="16" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                        <TextBlock Text="Settings" FontSize="12" FontWeight="SemiBold" Foreground="#cccccc" VerticalAlignment="Center"/>
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Border>
+
+        <!-- Main Content Area -->
+        <Grid Grid.Column="1" x:Name="ContentArea" Background="#0d1117">
+            <Border Background="#161b22" CornerRadius="8" Margin="15" BorderBrush="#30363d" BorderThickness="1">
+                <TextBlock Text="Select an app to get started"
+                          Foreground="#7d8590"
+                          FontSize="18"
+                          FontWeight="Light"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center"/>
+            </Border>
+        </Grid>
+
+        <!-- Settings Panel -->
+        <ScrollViewer Grid.Column="1" x:Name="SettingsPanel" Background="#0d1117" Visibility="Collapsed" Padding="20">
+            <Border Background="#161b22" CornerRadius="12" Padding="30" BorderBrush="#30363d" BorderThickness="1" 
+                    Margin="40,15,40,15" HorizontalAlignment="Stretch">
+                <StackPanel Spacing="20">
+                    <StackPanel Orientation="Horizontal" Spacing="10">
+                        <TextBlock Text="⚙️" FontSize="28" VerticalAlignment="Center"/>
+                        <TextBlock Text="Application Settings" FontSize="24" Foreground="White" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <Border Background="#21262d" CornerRadius="8" Padding="20" BorderBrush="#30363d" BorderThickness="1">
+                        <StackPanel Spacing="8">
+                            <TextBlock Text="📝 Instructions" FontSize="16" Foreground="#58a6ff" FontWeight="SemiBold"/>
+                            <TextBlock Text="• Chrome/Steam: Paste the full path to the .exe file" Foreground="#e6edf3" FontSize="13"/>
+                            <TextBlock Text="• Discord: Right-click desktop shortcut → Properties → copy 'Target' field" Foreground="#e6edf3" FontSize="13"/>
+                            <TextBlock Text="• Example: C:\Users\Name\AppData\Local\Discord\Update.exe --processStart Discord.exe" 
+                                      Foreground="#7d8590" FontSize="12" FontStyle="Italic"/>
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Spacing="15">
+                        <StackPanel>
+                            <TextBlock Text="🌐 Chrome Path" FontSize="14" Foreground="#58a6ff" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                            <TextBox Name="ChromePathBox" Background="#21262d" Foreground="White" 
+                                    BorderBrush="#30363d" BorderThickness="1" CornerRadius="6" 
+                                    Height="38" Padding="12,8" FontSize="13"/>
+                        </StackPanel>
+
+                        <StackPanel>
+                            <TextBlock Text="🎮 Steam Path" FontSize="14" Foreground="#58a6ff" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                            <TextBox Name="SteamPathBox" Background="#21262d" Foreground="White" 
+                                                                        BorderBrush="#30363d" BorderThickness="1" CornerRadius="6"
+                                    Height="38" Padding="12,8" FontSize="13"/>
+                        </StackPanel>
+
+                        <StackPanel>
+                            <TextBlock Text="💬 Discord Target (including arguments)" FontSize="14" Foreground="#58a6ff" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                            <TextBox Name="DiscordPathBox" Background="#21262d" Foreground="White" 
+                                    BorderBrush="#30363d" BorderThickness="1" CornerRadius="6"
+                                    Height="38" Padding="12,8" FontSize="13"/>
+                        </StackPanel>
+                    </StackPanel>
+
+                    <StackPanel Orientation="Horizontal" Spacing="15" HorizontalAlignment="Center" Margin="0,20,0,0">
+                        <Button Name="SaveSettingsBtn" Click="SaveSettingsBtn_Click" 
+                                Background="#238636" BorderBrush="#2ea043" BorderThickness="1" 
+                                CornerRadius="6" Padding="20,10" MinWidth="140">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                            BorderBrush="{TemplateBinding BorderBrush}" 
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="6">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        <VisualStateManager.VisualStateGroups>
+                                            <VisualStateGroup x:Name="CommonStates">
+                                                <VisualState x:Name="Normal"/>
+                                                <VisualState x:Name="PointerOver">
+                                                    <Storyboard>
+                                                        <ColorAnimation Storyboard.TargetName="border" 
+                                                                      Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                                      To="#2ea043" Duration="0:0:0.1"/>
+                                                    </Storyboard>
+                                                </VisualState>
+                                            </VisualStateGroup>
+                                        </VisualStateManager.VisualStateGroups>
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="💾" FontSize="14"/>
+                                <TextBlock Text="Save Settings" FontSize="13" FontWeight="SemiBold" Foreground="White"/>
+                            </StackPanel>
+                        </Button>
+
+                        <Button Name="CloseSettingsBtn" Click="CloseSettingsBtn_Click"
+                                Background="#21262d" BorderBrush="#f85149" BorderThickness="1" 
+                                CornerRadius="6" Padding="20,10" MinWidth="140">
+                            <Button.Template>
+                                <ControlTemplate TargetType="Button">
+                                    <Border x:Name="border" Background="{TemplateBinding Background}" 
+                                            BorderBrush="{TemplateBinding BorderBrush}" 
+                                            BorderThickness="{TemplateBinding BorderThickness}"
+                                            CornerRadius="6">
+                                        <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                        <VisualStateManager.VisualStateGroups>
+                                            <VisualStateGroup x:Name="CommonStates">
+                                                <VisualState x:Name="Normal"/>
+                                                <VisualState x:Name="PointerOver">
+                                                    <Storyboard>
+                                                        <ColorAnimation Storyboard.TargetName="border" 
+                                                                      Storyboard.TargetProperty="(Border.Background).(SolidColorBrush.Color)"
+                                                                      To="#f85149" Duration="0:0:0.1"/>
+                                                    </Storyboard>
+                                                </VisualState>
+                                            </VisualStateGroup>
+                                        </VisualStateManager.VisualStateGroups>
+                                    </Border>
+                                </ControlTemplate>
+                            </Button.Template>
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <TextBlock Text="❌" FontSize="14"/>
+                                <TextBlock Text="Close" FontSize="13" FontWeight="SemiBold" Foreground="White"/>
+                            </StackPanel>
+                        </Button>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </ScrollViewer>
+    </Grid>
+</Window>
+
